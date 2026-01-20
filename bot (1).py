@@ -1,8 +1,8 @@
 import os
-import discord
-from discord.ext import commands
+import disnake
+from disnake.ext import commands
 
-TOKEN = "MTM5MTM2MjgzNjEwOTcyMTYyMA.GJQMh8.cHlnr_Z4clMki4DcDctu_Sna1xJZqyPPMuGYIo"
+TOKEN = os.getenv("TOKEN")
 
 bot = commands.Bot(command_prefix=".", intents=disnake.Intents.all(), help_command=None)
 
