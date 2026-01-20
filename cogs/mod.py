@@ -1,8 +1,10 @@
-import disnake
-from disnake.ext import commands
+# mod.py
+import discord
+from discord.ext import commands
 import aiosqlite
 import datetime
 from datetime import timedelta
+import asyncio
 
 class Moderation(commands.Cog):
     def __init__(self, bot):
@@ -44,7 +46,6 @@ class Moderation(commands.Cog):
             return cursor.lastrowid
 
     async def log_punishment(self, guild_id: int, user_id: int, moderator_id: int, action_type: str, duration: str = None, reason: str = None):
-        """Логировать наказание в базу данных"""
         async with aiosqlite.connect(self.path) as db:
             await db.execute(
                 """INSERT INTO punishments (guild_id, user_id, moderator_id, action_type, duration, reason) 
@@ -80,17 +81,15 @@ class Moderation(commands.Cog):
 
     @commands.slash_command(name="mute", description="Выдать мьют пользователю на сервере.")
     @commands.has_permissions(mute_members=True)
-    async def mute(self, inter: disnake.ApplicationCommandInteraction,
-                   user: disnake.Member = commands.Param(description="Выберите пользователя."),
-                   duration: str = commands.Param(description="Время (пример: 1ч, 30м, 1д). Макс: 28д", default="1ч"),
-                   reason: str = commands.Param(description="Причина", default="Не указана")):
+    async def mute(self, ctx,
+                   user: discord.Member = commands.Option(description="Выберите пользователя."),
+                   duration: str = commands.Option(description="Время (пример: 1ч, 30м, 1д). Макс: 28д", default="1ч"),
+                   reason: str = commands.Option(description="Причина", default="Не указана")):
         
-        # Проверка прав
-        if user.top_role >= inter.author.top_role:
-            await inter.response.send_message("❌ Вы не можете замутить этого пользователя.", ephemeral=True)
+        if user.top_role >= ctx.author.top_role:
+            await ctx.respond("❌ Вы не можете замутить этого пользователя.", ephemeral=True)
             return
         
-        # Парсинг времени
         time_multipliers = {
             'с': 1,
             'м': 60,
@@ -108,273 +107,262 @@ class Moderation(commands.Cog):
             
             seconds = time_value * time_multipliers[time_unit]
             
-            if seconds > 2419200:  # 28 дней
-                await inter.response.send_message("❌ Максимальное время мьюта - 28 суток.", ephemeral=True)
+            if seconds > 2419200:
+                await ctx.respond("❌ Максимальное время мьюта - 28 суток.", ephemeral=True)
                 return
             
-            # Выдача мьюта
-            await user.timeout(duration=timedelta(seconds=seconds), reason=f"{reason} | Модератор: {inter.author}")
+            await user.timeout(discord.utils.utcnow() + timedelta(seconds=seconds), reason=f"{reason} | Модератор: {ctx.author}")
             
-            # Логируем в базу данных
             await self.log_punishment(
-                inter.guild.id, user.id, inter.author.id, "mute", duration, reason
+                ctx.guild.id, user.id, ctx.author.id, "mute", duration, reason
             )
             
-            embed = disnake.Embed(
+            embed = discord.Embed(
                 title="🔇 Мьют выдан",
                 description=f"**Пользователь:** {user.mention}\n**Время:** {duration}\n**Причина:** {reason}",
-                color=disnake.Color.orange()
+                color=discord.Color.orange()
             )
-            embed.set_footer(text=f"Модератор: {inter.author}")
+            embed.set_footer(text=f"Модератор: {ctx.author}")
             
-            await inter.response.send_message(embed=embed)
+            await ctx.respond(embed=embed)
             
-            # Отправляем сообщение пользователю
             try:
-                await user.send(f"🔇 Вы получили мьют на сервере **{inter.guild.name}** на **{duration}**.\n**Причина:** {reason}\n**Модератор:** {inter.author}")
+                await user.send(f"🔇 Вы получили мьют на сервере **{ctx.guild.name}** на **{duration}**.\n**Причина:** {reason}\n**Модератор:** {ctx.author}")
             except:
                 pass
                 
         except ValueError:
-            await inter.response.send_message("❌ Неверный формат времени. Используйте: 1ч, 30м, 2д и т.д.", ephemeral=True)
+            await ctx.respond("❌ Неверный формат времени. Используйте: 1ч, 30м, 2д и т.д.", ephemeral=True)
         except Exception as e:
-            await inter.response.send_message(f"❌ Ошибка: {str(e)}", ephemeral=True)
+            await ctx.respond(f"❌ Ошибка: {str(e)}", ephemeral=True)
 
     @commands.slash_command(name="unmute", description="Снять мьют с пользователя.")
     @commands.has_permissions(mute_members=True)
-    async def unmute(self, inter: disnake.ApplicationCommandInteraction,
-                     user: disnake.Member = commands.Param(description="Выберите пользователя."),
-                     reason: str = commands.Param(description="Причина", default="Не указана")):
+    async def unmute(self, ctx,
+                     user: discord.Member = commands.Option(description="Выберите пользователя."),
+                     reason: str = commands.Option(description="Причина", default="Не указана")):
         
         try:
-            await user.timeout(duration=None, reason=f"{reason} | Модератор: {inter.author}")
+            await user.timeout(None, reason=f"{reason} | Модератор: {ctx.author}")
             
-            # Логируем в базу данных
             await self.log_punishment(
-                inter.guild.id, user.id, inter.author.id, "unmute", None, reason
+                ctx.guild.id, user.id, ctx.author.id, "unmute", None, reason
             )
             
-            embed = disnake.Embed(
+            embed = discord.Embed(
                 title="🔊 Мьют снят",
                 description=f"**Пользователь:** {user.mention}\n**Причина:** {reason}",
-                color=disnake.Color.green()
+                color=discord.Color.green()
             )
-            embed.set_footer(text=f"Модератор: {inter.author}")
+            embed.set_footer(text=f"Модератор: {ctx.author}")
             
-            await inter.response.send_message(embed=embed)
+            await ctx.respond(embed=embed)
             
             try:
-                await user.send(f"🔊 Ваш мьют был снят на сервере **{inter.guild.name}**.\n**Причина:** {reason}\n**Модератор:** {inter.author}")
+                await user.send(f"🔊 Ваш мьют был снят на сервере **{ctx.guild.name}**.\n**Причина:** {reason}\n**Модератор:** {ctx.author}")
             except:
                 pass
                 
         except Exception as e:
-            await inter.response.send_message(f"❌ Ошибка: {str(e)}", ephemeral=True)
+            await ctx.respond(f"❌ Ошибка: {str(e)}", ephemeral=True)
 
     @commands.slash_command(name="kick", description="Выдать кик пользователю.")
     @commands.has_permissions(kick_members=True)
-    async def kick(self, inter: disnake.ApplicationCommandInteraction,
-                   user: disnake.Member = commands.Param(description="Выберите пользователя."),
-                   reason: str = commands.Param(description="Причина", default="Не указана")):
+    async def kick(self, ctx,
+                   user: discord.Member = commands.Option(description="Выберите пользователя."),
+                   reason: str = commands.Option(description="Причина", default="Не указана")):
         
-        if user.top_role >= inter.author.top_role:
-            await inter.response.send_message("❌ Вы не можете кикнуть этого пользователя.", ephemeral=True)
+        if user.top_role >= ctx.author.top_role:
+            await ctx.respond("❌ Вы не можете кикнуть этого пользователя.", ephemeral=True)
             return
         
         try:
-            await user.kick(reason=f"{reason} | Модератор: {inter.author}")
+            await user.kick(reason=f"{reason} | Модератор: {ctx.author}")
             
-            # Логируем в базу данных
             await self.log_punishment(
-                inter.guild.id, user.id, inter.author.id, "kick", None, reason
+                ctx.guild.id, user.id, ctx.author.id, "kick", None, reason
             )
             
-            embed = disnake.Embed(
+            embed = discord.Embed(
                 title="👢 Кик",
                 description=f"**Пользователь:** {user.mention}\n**Причина:** {reason}",
-                color=disnake.Color.red()
+                color=discord.Color.red()
             )
-            embed.set_footer(text=f"Модератор: {inter.author}")
+            embed.set_footer(text=f"Модератор: {ctx.author}")
             
-            await inter.response.send_message(embed=embed)
+            await ctx.respond(embed=embed)
             
             try:
-                await user.send(f"👢 Вы были кикнуты с сервера **{inter.guild.name}**.\n**Причина:** {reason}\n**Модератор:** {inter.author}")
+                await user.send(f"👢 Вы были кикнуты с сервера **{ctx.guild.name}**.\n**Причина:** {reason}\n**Модератор:** {ctx.author}")
             except:
                 pass
                 
         except Exception as e:
-            await inter.response.send_message(f"❌ Ошибка: {str(e)}", ephemeral=True)
+            await ctx.respond(f"❌ Ошибка: {str(e)}", ephemeral=True)
 
     @commands.slash_command(name="ban", description="Выдать бан пользователю.")
     @commands.has_permissions(ban_members=True)
-    async def ban(self, inter: disnake.ApplicationCommandInteraction,
-                  user: disnake.Member = commands.Param(description="Выберите пользователя."),
-                  reason: str = commands.Param(description="Причина", default="Не указана"),
-                  delete_days: int = commands.Param(default=0, description="Удалить сообщения за N дней", ge=0, le=7)):
+    async def ban(self, ctx,
+                  user: discord.Member = commands.Option(description="Выберите пользователя."),
+                  reason: str = commands.Option(description="Причина", default="Не указана"),
+                  delete_days: int = commands.Option(default=0, description="Удалить сообщения за N дней", min_value=0, max_value=7)):
         
-        if user.top_role >= inter.author.top_role:
-            await inter.response.send_message("❌ Вы не можете забанить этого пользователя.", ephemeral=True)
+        if user.top_role >= ctx.author.top_role:
+            await ctx.respond("❌ Вы не можете забанить этого пользователя.", ephemeral=True)
             return
         
         try:
-            await user.ban(reason=f"{reason} | Модератор: {inter.author}", delete_message_days=delete_days)
+            await user.ban(reason=f"{reason} | Модератор: {ctx.author}", delete_message_days=delete_days)
             
-            # Логируем в базу данных
             await self.log_punishment(
-                inter.guild.id, user.id, inter.author.id, "ban", None, reason
+                ctx.guild.id, user.id, ctx.author.id, "ban", None, reason
             )
             
-            embed = disnake.Embed(
+            embed = discord.Embed(
                 title="🚫 Бан",
                 description=f"**Пользователь:** {user.mention}\n**Причина:** {reason}\n**Удалено сообщений:** {delete_days} дней",
-                color=disnake.Color.dark_red()
+                color=discord.Color.dark_red()
             )
-            embed.set_footer(text=f"Модератор: {inter.author}")
+            embed.set_footer(text=f"Модератор: {ctx.author}")
             
-            await inter.response.send_message(embed=embed)
+            await ctx.respond(embed=embed)
             
             try:
-                await user.send(f"🚫 Вы были забанены на сервере **{inter.guild.name}**.\n**Причина:** {reason}\n**Модератор:** {inter.author}")
+                await user.send(f"🚫 Вы были забанены на сервере **{ctx.guild.name}**.\n**Причина:** {reason}\n**Модератор:** {ctx.author}")
             except:
                 pass
                 
         except Exception as e:
-            await inter.response.send_message(f"❌ Ошибка: {str(e)}", ephemeral=True)
+            await ctx.respond(f"❌ Ошибка: {str(e)}", ephemeral=True)
 
     @commands.slash_command(name="unban", description="Снять бан с пользователя.")
     @commands.has_permissions(ban_members=True)
-    async def unban(self, inter: disnake.ApplicationCommandInteraction,
-                    user_id: str = commands.Param(description="ID пользователя для разбана."),
-                    reason: str = commands.Param(description="Причина", default="Не указана")):
+    async def unban(self, ctx,
+                    user_id: str = commands.Option(description="ID пользователя для разбана."),
+                    reason: str = commands.Option(description="Причина", default="Не указана")):
         
         try:
             user_id_int = int(user_id)
             user = await self.bot.fetch_user(user_id_int)
             
-            await inter.guild.unban(user, reason=f"{reason} | Модератор: {inter.author}")
+            await ctx.guild.unban(user, reason=f"{reason} | Модератор: {ctx.author}")
             
-            # Логируем в базу данных
             await self.log_punishment(
-                inter.guild.id, user.id, inter.author.id, "unban", None, reason
+                ctx.guild.id, user.id, ctx.author.id, "unban", None, reason
             )
             
-            embed = disnake.Embed(
+            embed = discord.Embed(
                 title="✅ Разбан",
                 description=f"**Пользователь:** {user.mention}\n**Причина:** {reason}",
-                color=disnake.Color.green()
+                color=discord.Color.green()
             )
-            embed.set_footer(text=f"Модератор: {inter.author}")
+            embed.set_footer(text=f"Модератор: {ctx.author}")
             
-            await inter.response.send_message(embed=embed)
+            await ctx.respond(embed=embed)
             
             try:
-                await user.send(f"✅ Вы были разбанены на сервере **{inter.guild.name}**.\n**Причина:** {reason}\n**Модератор:** {inter.author}")
+                await user.send(f"✅ Вы были разбанены на сервере **{ctx.guild.name}**.\n**Причина:** {reason}\n**Модератор:** {ctx.author}")
             except:
                 pass
                 
         except ValueError:
-            await inter.response.send_message("❌ Неверный ID пользователя.", ephemeral=True)
-        except disnake.NotFound:
-            await inter.response.send_message("❌ Пользователь не найден или не забанен.", ephemeral=True)
+            await ctx.respond("❌ Неверный ID пользователя.", ephemeral=True)
+        except discord.NotFound:
+            await ctx.respond("❌ Пользователь не найден или не забанен.", ephemeral=True)
         except Exception as e:
-            await inter.response.send_message(f"❌ Ошибка: {str(e)}", ephemeral=True)
+            await ctx.respond(f"❌ Ошибка: {str(e)}", ephemeral=True)
 
     @commands.slash_command(name="clear", description="Очистить сообщения в канале.")
     @commands.has_permissions(manage_messages=True)
-    async def clear(self, inter: disnake.ApplicationCommandInteraction,
-                    amount: int = commands.Param(description="Количество сообщений (1-100)", ge=1, le=100)):
+    async def clear(self, ctx,
+                    amount: int = commands.Option(description="Количество сообщений (1-100)", min_value=1, max_value=100)):
         
-        await inter.response.defer(ephemeral=True)
+        await ctx.defer(ephemeral=True)
         
         try:
-            deleted = await inter.channel.purge(limit=amount)
+            deleted = await ctx.channel.purge(limit=amount)
             
-            # Логируем в базу данных
             await self.log_punishment(
-                inter.guild.id, 0, inter.author.id, "clear", str(amount), f"Очистка в #{inter.channel.name}"
+                ctx.guild.id, 0, ctx.author.id, "clear", str(amount), f"Очистка в #{ctx.channel.name}"
             )
             
-            embed = disnake.Embed(
+            embed = discord.Embed(
                 title="🗑️ Очистка сообщений",
-                description=f"Удалено **{len(deleted)}** сообщений в {inter.channel.mention}",
-                color=disnake.Color.blue()
+                description=f"Удалено **{len(deleted)}** сообщений в {ctx.channel.mention}",
+                color=discord.Color.blue()
             )
-            embed.set_footer(text=f"Модератор: {inter.author}")
+            embed.set_footer(text=f"Модератор: {ctx.author}")
             
-            await inter.followup.send(embed=embed, ephemeral=True)
+            await ctx.respond(embed=embed, ephemeral=True)
             
-            # Автоудаление через 5 секунд
             await asyncio.sleep(5)
-            await inter.delete_original_response()
+            await ctx.message.delete()
             
         except Exception as e:
-            await inter.followup.send(f"❌ Ошибка: {str(e)}", ephemeral=True)
+            await ctx.followup.send(f"❌ Ошибка: {str(e)}", ephemeral=True)
 
     @commands.slash_command(name="warn", description="Выдать предупреждение пользователю.")
     @commands.has_permissions(manage_messages=True)
-    async def warn(self, inter: disnake.ApplicationCommandInteraction,
-                   user: disnake.Member = commands.Param(description="Выберите пользователя."),
-                   reason: str = commands.Param(description="Укажите причину.", default="Не указана")):
+    async def warn(self, ctx,
+                   user: discord.Member = commands.Option(description="Выберите пользователя."),
+                   reason: str = commands.Option(description="Укажите причину.", default="Не указана")):
         
-        if user.top_role >= inter.author.top_role:
-            await inter.response.send_message("❌ Вы не можете выдать предупреждение этому пользователю.", ephemeral=True)
+        if user.top_role >= ctx.author.top_role:
+            await ctx.respond("❌ Вы не можете выдать предупреждение этому пользователю.", ephemeral=True)
             return
         
-        warn_id = await self.warn_user(user.id, inter.author.id, reason)
+        warn_id = await self.warn_user(user.id, ctx.author.id, reason)
         warnings_count = await self.get_warnings_count(user.id)
         
-        # Логируем в базу данных
         await self.log_punishment(
-            inter.guild.id, user.id, inter.author.id, "warn", None, reason
+            ctx.guild.id, user.id, ctx.author.id, "warn", None, reason
         )
         
-        embed = disnake.Embed(
+        embed = discord.Embed(
             title="⚠️ Предупреждение выдано",
             description=f"**Пользователь:** {user.mention}\n**Причина:** {reason}\n**Всего предупреждений:** {warnings_count}",
-            color=disnake.Color.yellow()
+            color=discord.Color.yellow()
         )
-        embed.set_footer(text=f"ID предупреждения: {warn_id} | Модератор: {inter.author}")
+        embed.set_footer(text=f"ID предупреждения: {warn_id} | Модератор: {ctx.author}")
         
-        await inter.response.send_message(embed=embed)
+        await ctx.respond(embed=embed)
         
         try:
-            await user.send(f"⚠️ Вы получили предупреждение на сервере **{inter.guild.name}**.\n**Причина:** {reason}\n**Всего предупреждений:** {warnings_count}\n**Модератор:** {inter.author}")
+            await user.send(f"⚠️ Вы получили предупреждение на сервере **{ctx.guild.name}**.\n**Причина:** {reason}\n**Всего предупреждений:** {warnings_count}\n**Модератор:** {ctx.author}")
         except:
             pass
 
     @commands.slash_command(name="unwarn", description="Снять предупреждение с пользователя.")
     @commands.has_permissions(manage_messages=True)
-    async def unwarn(self, inter: disnake.ApplicationCommandInteraction,
-                     user: disnake.Member = commands.Param(description="Выберите пользователя."),
-                     warn_id: int = commands.Param(description="ID предупреждения (оставьте пустым для всех)", default=None),
-                     reason: str = commands.Param(description="Причина", default="Не указана")):
+    async def unwarn(self, ctx,
+                     user: discord.Member = commands.Option(description="Выберите пользователя."),
+                     warn_id: int = commands.Option(description="ID предупреждения (оставьте пустым для всех)", default=None),
+                     reason: str = commands.Option(description="Причина", default="Не указана")):
         
         success = await self.unwarn_user(user.id, True, warn_id)
         
         if success:
-            # Логируем в базу данных
             await self.log_punishment(
-                inter.guild.id, user.id, inter.author.id, "unwarn", None, f"{reason} | Warn ID: {warn_id or 'all'}"
+                ctx.guild.id, user.id, ctx.author.id, "unwarn", None, f"{reason} | Warn ID: {warn_id or 'all'}"
             )
             
-            embed = disnake.Embed(
+            embed = discord.Embed(
                 title="✅ Предупреждение снято",
                 description=f"**Пользователь:** {user.mention}\n**Причина:** {reason}",
-                color=disnake.Color.green()
+                color=discord.Color.green()
             )
             if warn_id:
                 embed.add_field(name="ID предупреждения", value=str(warn_id))
-            embed.set_footer(text=f"Модератор: {inter.author}")
+            embed.set_footer(text=f"Модератор: {ctx.author}")
             
-            await inter.response.send_message(embed=embed)
+            await ctx.respond(embed=embed)
         else:
-            await inter.response.send_message("❌ Не удалось снять предупреждение.", ephemeral=True)
+            await ctx.respond("❌ Не удалось снять предупреждение.", ephemeral=True)
 
     @commands.slash_command(name="warnings", description="Посмотреть предупреждения пользователя.")
     @commands.has_permissions(manage_messages=True)
-    async def warnings(self, inter: disnake.ApplicationCommandInteraction,
-                       user: disnake.Member = commands.Param(description="Выберите пользователя.")):
+    async def warnings(self, ctx,
+                       user: discord.Member = commands.Option(description="Выберите пользователя.")):
         
         async with aiosqlite.connect(self.path) as db:
             warnings = await db.execute(
@@ -384,59 +372,59 @@ class Moderation(commands.Cog):
             ).fetchall()
         
         if not warnings:
-            embed = disnake.Embed(
+            embed = discord.Embed(
                 title=f"Предупреждения {user.display_name}",
                 description="✅ Нет активных предупреждений",
-                color=disnake.Color.green()
+                color=discord.Color.green()
             )
-            await inter.response.send_message(embed=embed)
+            await ctx.respond(embed=embed)
             return
         
-        embed = disnake.Embed(
+        embed = discord.Embed(
             title=f"Предупреждения {user.display_name}",
             description=f"Всего активных предупреждений: **{len(warnings)}**",
-            color=disnake.Color.orange()
+            color=discord.Color.orange()
         )
         
         for warn_id, moderator_id, reason, time in warnings[:10]:
-            moderator = inter.guild.get_member(moderator_id) or f"ID: {moderator_id}"
+            moderator = ctx.guild.get_member(moderator_id) or f"ID: {moderator_id}"
             embed.add_field(
                 name=f"ID: {warn_id} | {time}",
                 value=f"**Модератор:** {moderator}\n**Причина:** {reason}",
                 inline=False
             )
         
-        await inter.response.send_message(embed=embed)
+        await ctx.respond(embed=embed)
 
     @commands.slash_command(name="punishments", description="История наказаний пользователя.")
     @commands.has_permissions(manage_messages=True)
-    async def punishments(self, inter: disnake.ApplicationCommandInteraction,
-                          user: disnake.Member = commands.Param(description="Выберите пользователя.")):
+    async def punishments(self, ctx,
+                          user: discord.Member = commands.Option(description="Выберите пользователя.")):
         
         async with aiosqlite.connect(self.path) as db:
             punishments = await db.execute(
                 """SELECT action_type, moderator_id, duration, reason, time FROM punishments 
                 WHERE user_id = ? AND guild_id = ? ORDER BY time DESC LIMIT 20""", 
-                (user.id, inter.guild.id)
+                (user.id, ctx.guild.id)
             ).fetchall()
         
         if not punishments:
-            embed = disnake.Embed(
+            embed = discord.Embed(
                 title=f"Наказания {user.display_name}",
                 description="📝 Нет записей о наказаниях",
-                color=disnake.Color.blue()
+                color=discord.Color.blue()
             )
-            await inter.response.send_message(embed=embed)
+            await ctx.respond(embed=embed)
             return
         
-        embed = disnake.Embed(
+        embed = discord.Embed(
             title=f"Наказания {user.display_name}",
             description=f"Всего записей: **{len(punishments)}**",
-            color=disnake.Color.blue()
+            color=discord.Color.blue()
         )
         
         for action_type, moderator_id, duration, reason, time in punishments:
-            moderator = inter.guild.get_member(moderator_id) or f"ID: {moderator_id}"
+            moderator = ctx.guild.get_member(moderator_id) or f"ID: {moderator_id}"
             action_emoji = {
                 "mute": "🔇", "unmute": "🔊", "kick": "👢", 
                 "ban": "🚫", "unban": "✅", "warn": "⚠️", 
@@ -453,14 +441,13 @@ class Moderation(commands.Cog):
                 inline=False
             )
         
-        await inter.response.send_message(embed=embed)
+        await ctx.respond(embed=embed)
 
     @commands.Cog.listener()
     async def on_message(self, message):
         if message.author.bot:
             return
         
-        # Удаление сообщения по реакции "-смс"
         if message.content.lower() == "-смс" and message.reference:
             if message.channel.permissions_for(message.author).manage_messages:
                 try:
@@ -470,5 +457,5 @@ class Moderation(commands.Cog):
                 except:
                     pass
 
-def setup(bot):
-    bot.add_cog(Moderation(bot))
+async def setup(bot):
+    await bot.add_cog(Moderation(bot))
