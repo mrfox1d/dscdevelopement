@@ -1,5 +1,6 @@
-import disnake
-from disnake.ext import commands
+# tickets.py
+import discord
+from discord.ext import commands
 import aiosqlite
 import asyncio
 from datetime import datetime
@@ -47,8 +48,7 @@ class TicketSystem(commands.Cog):
         async with aiosqlite.connect(self.path) as db:
             await db.execute("UPDATE tickets SET status = 'closed' WHERE id = ?", (ticket_id,))
             
-            # Сохраняем транскрипт
-            messages = await channel.history(limit=None).flatten()
+            messages = [message async for message in channel.history(limit=None, oldest_first=True)]
             for message in messages:
                 await db.execute("INSERT INTO transcripts (ticket_id, message, message_author) VALUES (?, ?, ?)",
                                 (ticket_id, message.content, message.author.id))
@@ -70,20 +70,20 @@ class TicketSystem(commands.Cog):
             
             message = await ctx.send("""**🛠️ Процесс создания начался.**\n░░░░░░░░░░░░ | 0%""")
             
-            category = await ctx.guild.create_category("🎫 Тикеты")
+            category = await ctx.guild.create_category_channel("🎫 Тикеты")
             await message.edit(content="""**🛠️ Создание в процессе.**\n████░░░░░░░░ | 33%""")
             
             channel = await ctx.guild.create_text_channel("🎫・создать-тикет", category=category)
             await message.edit(content="""**🛠️ Создание в процессе.**\n████████░░░░ | 66%""")
             
-            emb = disnake.Embed(
+            emb = discord.Embed(
                 title="🎫 Создание тикета.", 
                 description="・Для создания тикета нажмите на кнопку."
             )
             emb.set_author(name=ctx.guild.name, icon_url=ctx.guild.icon.url if ctx.guild.icon else None)
             
-            view = disnake.ui.View(timeout=None)
-            btn = disnake.ui.Button(label="🎫", style=disnake.ButtonStyle.success, custom_id="create_ticket")
+            view = discord.ui.View(timeout=None)
+            btn = discord.ui.Button(label="🎫", style=discord.ButtonStyle.success, custom_id="create_ticket")
             view.add_item(btn)
             
             await channel.send("@everyone", embed=emb, view=view)
@@ -96,77 +96,80 @@ class TicketSystem(commands.Cog):
             await message.edit(content=f"""**🛠️ Создание завершено.**\n████████████ | 100%\n\n🎫 Созданный канал: **{channel.mention}** | Категория: **🎫 Тикеты**""")
 
     @commands.Cog.listener()
-    async def on_button_click(self, inter: disnake.MessageInteraction):
-        if inter.component.custom_id == "create_ticket":
+    async def on_interaction(self, interaction):
+        if interaction.type != discord.InteractionType.component:
+            return
+        
+        custom_id = interaction.data['custom_id']
+        
+        if custom_id == "create_ticket":
             async with aiosqlite.connect(self.path) as db:
-                setup = await db.execute("SELECT * FROM setup WHERE guild_id = ?", (inter.guild.id,)).fetchone()
+                setup = await db.execute("SELECT * FROM setup WHERE guild_id = ?", (interaction.guild.id,)).fetchone()
                 if not setup:
-                    await inter.response.send_message("❌ Сетап тикетов не сделан.", ephemeral=True)
+                    await interaction.response.send_message("❌ Сетап тикетов не сделан.", ephemeral=True)
                     return
                 
-                ticket_category = inter.guild.get_channel(setup[1])
+                ticket_category = interaction.guild.get_channel(setup[1])
                 if not ticket_category:
-                    await inter.response.send_message("❌ Категория тикетов не найдена.", ephemeral=True)
+                    await interaction.response.send_message("❌ Категория тикетов не найдена.", ephemeral=True)
                     return
                 
-                ticket_channel = inter.guild.get_channel(setup[2])
+                ticket_channel = interaction.guild.get_channel(setup[2])
                 
-                ticket = await ticket_category.create_text_channel(f"🎫・{inter.author.name}")
-                await ticket.set_permissions(inter.author, read_messages=True, send_messages=True)
-                await ticket.set_permissions(inter.guild.default_role, read_messages=False)
+                ticket = await ticket_category.create_text_channel(f"🎫・{interaction.user.name}")
+                await ticket.set_permissions(interaction.user, read_messages=True, send_messages=True)
+                await ticket.set_permissions(interaction.guild.default_role, read_messages=False)
                 
-                await self.create_ticket(inter.author.id, ticket.id)
-                await inter.response.send_message(f"✅ Тикет создан: {ticket.mention}", ephemeral=True)
+                await self.create_ticket(interaction.user.id, ticket.id)
+                await interaction.response.send_message(f"✅ Тикет создан: {ticket.mention}", ephemeral=True)
 
-                view = disnake.ui.View(timeout=None)
-                button1 = disnake.ui.Button(label="✅ Принять тикет", style=disnake.ButtonStyle.blurple, custom_id="accept_ticket")
-                button2 = disnake.ui.Button(label="❌ Закрыть тикет", style=disnake.ButtonStyle.danger, custom_id="close_ticket")
+                view = discord.ui.View(timeout=None)
+                button1 = discord.ui.Button(label="✅ Принять тикет", style=discord.ButtonStyle.blurple, custom_id="accept_ticket")
+                button2 = discord.ui.Button(label="❌ Закрыть тикет", style=discord.ButtonStyle.danger, custom_id="close_ticket")
                 view.add_item(button1)
                 view.add_item(button2)
                 
-                emb = disnake.Embed(
+                emb = discord.Embed(
                     title="🎫 Тикет создан.", 
                     description="・Спасибо, что обратились к нам!\n・Ожидайте, когда модератор ответит."
                 )
-                emb.set_author(name=inter.guild.name, icon_url=inter.guild.icon.url if inter.guild.icon else None)
+                emb.set_author(name=interaction.guild.name, icon_url=interaction.guild.icon.url if interaction.guild.icon else None)
                 
-                await ticket.send(embed=emb, content=f"{inter.author.mention}", view=view)
+                await ticket.send(embed=emb, content=f"{interaction.user.mention}", view=view)
                 await ticket.send("@here")
 
-        elif inter.component.custom_id == "accept_ticket":
+        elif custom_id == "accept_ticket":
             async with aiosqlite.connect(self.path) as db:
-                ticket = await db.execute("SELECT * FROM tickets WHERE channel_id = ?", (inter.channel.id,)).fetchone()
+                ticket = await db.execute("SELECT * FROM tickets WHERE channel_id = ?", (interaction.channel.id,)).fetchone()
                 if not ticket:
-                    await inter.response.send_message("❌ Тикет не найден.", ephemeral=True)
+                    await interaction.response.send_message("❌ Тикет не найден.", ephemeral=True)
                     return
                 
-                moderator = ticket[5]  # moderator_id
+                moderator = ticket[5]
                 if moderator:
-                    await inter.response.send_message(f"❌ Тикет уже принят пользователем <@{moderator}>.", ephemeral=True)
+                    await interaction.response.send_message(f"❌ Тикет уже принят пользователем <@{moderator}>.", ephemeral=True)
                     return
                 
-                await self.add_ticket_moderator(ticket[0], inter.author.id)
-                await inter.response.send_message(f"✅ Тикет принят: {inter.author.mention}", ephemeral=True)
+                await self.add_ticket_moderator(ticket[0], interaction.user.id)
+                await interaction.response.send_message(f"✅ Тикет принят: {interaction.user.mention}", ephemeral=True)
                 
-                ticket_author = ticket[1]  # author_id
-                await inter.channel.send(f"<@{ticket_author}>, ваш тикет обслужит <@{inter.author.id}>.")
+                ticket_author = ticket[1]
+                await interaction.channel.send(f"<@{ticket_author}>, ваш тикет обслужит <@{interaction.user.id}>.")
 
-        elif inter.component.custom_id == "close_ticket":
+        elif custom_id == "close_ticket":
             async with aiosqlite.connect(self.path) as db:
-                ticket = await db.execute("SELECT * FROM tickets WHERE channel_id = ?", (inter.channel.id,)).fetchone()
+                ticket = await db.execute("SELECT * FROM tickets WHERE channel_id = ?", (interaction.channel.id,)).fetchone()
                 if not ticket:
-                    await inter.response.send_message("❌ Тикет не найден.", ephemeral=True)
+                    await interaction.response.send_message("❌ Тикет не найден.", ephemeral=True)
                     return
                 
-                # Проверка прав
-                if ticket[5] != inter.author.id and not inter.channel.permissions_for(inter.author).administrator:
-                    await inter.response.send_message("❌ Вы не можете закрыть этот тикет.", ephemeral=True)
+                if ticket[5] != interaction.user.id and not interaction.channel.permissions_for(interaction.user).administrator:
+                    await interaction.response.send_message("❌ Вы не можете закрыть этот тикет.", ephemeral=True)
                     return
                 
-                await self.close_ticket(ticket[0], inter.channel)
+                await self.close_ticket(ticket[0], interaction.channel)
                 
-                # Отсчет перед удалением
-                message = await inter.channel.send("⚠️ Тикет закрыт.\n⏱️ Канал будет удалён через **5 секунд**.")
+                message = await interaction.channel.send("⚠️ Тикет закрыт.\n⏱️ Канал будет удалён через **5 секунд**.")
                 
                 for i in range(4, -1, -1):
                     await asyncio.sleep(1)
@@ -174,7 +177,7 @@ class TicketSystem(commands.Cog):
                         await message.edit(content=f"⚠️ Тикет закрыт.\n⏱️ Канал будет удалён через **{i} секунду**.")
                     elif i == 0:
                         await message.edit(content="⚠️ Тикет закрыт.\n⏱️ Канал будет удалён через **0 секунд**.")
-                        await inter.channel.delete()
+                        await interaction.channel.delete()
                         break
                     else:
                         await message.edit(content=f"⚠️ Тикет закрыт.\n⏱️ Канал будет удалён через **{i} секунды**.")
@@ -206,12 +209,11 @@ class TicketSystem(commands.Cog):
             if message.author.id == ticket_author_id:
                 return
             
-            # Если сообщение от постороннего
             await message.delete()
             try:
                 await message.author.send("⚠️ Не мешайте работе модераторов, не влезайте в тикет!")
             except:
                 pass
 
-def setup(bot):
-    bot.add_cog(TicketSystem(bot))
+async def setup(bot):
+    await bot.add_cog(TicketSystem(bot))
