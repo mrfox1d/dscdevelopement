@@ -13,8 +13,6 @@ async def on_ready():
     await bot.change_presence(activity=discord.Activity(type=discord.ActivityType.playing, name="Minecraft | Сервер: AquaLand"), status=discord.Status.dnd)
     print(f"Logged in as {bot.user.name}")
     
-    for filename in os.listdir("./v1rago/cogs"):
-        if filename.endswith(".py"):
-            await bot.load_extension(f"v1rago.cogs.{filename[:-3]}")
+    bot.load_extensions("cogs")
 
 bot.run(TOKEN)
