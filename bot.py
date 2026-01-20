@@ -1,6 +1,6 @@
 import os
-import discord
-from discord.ext import commands
+import disnake
+from disnake.ext import commands
 
 TOKEN = "MTM5MTM2MjgzNjEwOTcyMTYyMA.GJQMh8.cHlnr_Z4clMki4DcDctu_Sna1xJZqyPPMuGYIo"
 
