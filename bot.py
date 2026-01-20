@@ -14,7 +14,7 @@ async def on_ready():
     print(f"Logged in as {bot.user.name}")
     
     for filename in os.listdir("./cogs"):
-        if filename.enswith(".py"):
+        if filename.endswith(".py"):
             await bot.load_extension(f"cogs.{filename[:-3]}")
 
 bot.run(TOKEN)
