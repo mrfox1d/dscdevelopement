@@ -1,7 +1,6 @@
 # tickets.py
-import disnake
-from disnake.ext import commands
-from disnake.ui import Button, View, Modal, TextInput, Select
+import discord
+from discord.ext import commands
 import aiosqlite
 import asyncio
 from datetime import datetime
@@ -12,13 +11,11 @@ class TicketSystem(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
         self.path = "v1rago/dbs/file.db"
-        self.ticket_cooldowns = {}
+        self.ticket_cooldowns = {}  # Для кд на создание тикетов
 
     async def init_db(self):
         async with aiosqlite.connect(self.path) as db:
             await db.execute("PRAGMA foreign_keys = ON")
-            
-            # Таблица тикетов
             await db.execute("""CREATE TABLE IF NOT EXISTS tickets (
                              id INTEGER PRIMARY KEY AUTOINCREMENT,
                              author_id INTEGER,
@@ -31,7 +28,6 @@ class TicketSystem(commands.Cog):
                              closed_at TEXT DEFAULT NULL,
                              close_reason TEXT DEFAULT NULL)""")
             
-            # Сообщения в тикетах
             await db.execute("""CREATE TABLE IF NOT EXISTS ticket_messages (
                              id INTEGER PRIMARY KEY AUTOINCREMENT,
                              ticket_id INTEGER,
@@ -41,7 +37,6 @@ class TicketSystem(commands.Cog):
                              attachments TEXT DEFAULT NULL,
                              FOREIGN KEY (ticket_id) REFERENCES tickets(id) ON DELETE CASCADE)""")
             
-            # Транскрипты
             await db.execute("""CREATE TABLE IF NOT EXISTS transcripts (
                              id INTEGER PRIMARY KEY AUTOINCREMENT,
                              ticket_id INTEGER,
@@ -49,22 +44,19 @@ class TicketSystem(commands.Cog):
                              created_at TEXT,
                              FOREIGN KEY (ticket_id) REFERENCES tickets(id) ON DELETE CASCADE)""")
             
-            # Конфигурация
             await db.execute("""CREATE TABLE IF NOT EXISTS ticket_config (
                              guild_id INTEGER PRIMARY KEY,
                              category_id INTEGER DEFAULT NULL,
                              create_channel_id INTEGER DEFAULT NULL,
-                             create_message_id INTEGER DEFAULT NULL,
                              log_channel_id INTEGER DEFAULT NULL,
                              support_role_id INTEGER DEFAULT NULL,
                              max_tickets_per_user INTEGER DEFAULT 3,
-                             ticket_cooldown INTEGER DEFAULT 300,
-                             require_topic BOOLEAN DEFAULT 0,
-                             auto_close_hours INTEGER DEFAULT 24,
+                             ticket_cooldown INTEGER DEFAULT 300,  # 5 минут
+                             require_topic BOOLEAN DEFAULT FALSE,
+                             auto_close_hours INTEGER DEFAULT 24,  # Автозакрытие через 24 часа
                              welcome_message TEXT DEFAULT 'Спасибо за обращение! Ожидайте ответа модератора.',
                              ticket_types TEXT DEFAULT 'general,report,bug,support')""")
             
-            # Темы тикетов
             await db.execute("""CREATE TABLE IF NOT EXISTS ticket_topics (
                              id INTEGER PRIMARY KEY AUTOINCREMENT,
                              guild_id INTEGER,
@@ -78,6 +70,8 @@ class TicketSystem(commands.Cog):
     async def on_ready(self):
         await self.init_db()
         print(f"Ког {self.__class__.__name__} загружен!")
+        
+        # Запускаем задачу проверки автозакрытия тикетов
         self.bot.loop.create_task(self.check_auto_close_tickets())
 
     async def get_ticket_config(self, guild_id):
@@ -88,18 +82,17 @@ class TicketSystem(commands.Cog):
                     'guild_id': config[0],
                     'category_id': config[1],
                     'create_channel_id': config[2],
-                    'create_message_id': config[3],
-                    'log_channel_id': config[4],
-                    'support_role_id': config[5],
-                    'max_tickets_per_user': config[6],
-                    'ticket_cooldown': config[7],
-                    'require_topic': bool(config[8]),
-                    'auto_close_hours': config[9],
-                    'welcome_message': config[10],
-                    'ticket_types': config[11].split(',') if config[11] else ['general']
+                    'log_channel_id': config[3],
+                    'support_role_id': config[4],
+                    'max_tickets_per_user': config[5],
+                    'ticket_cooldown': config[6],
+                    'require_topic': bool(config[7]),
+                    'auto_close_hours': config[8],
+                    'welcome_message': config[9],
+                    'ticket_types': config[10].split(',') if config[10] else ['general']
                 }
             
-            # Конфиг по умолчанию
+            # Создаем конфиг по умолчанию
             default_types = 'general,report,bug,support,other'
             await db.execute(
                 "INSERT INTO ticket_config (guild_id, ticket_types) VALUES (?, ?)",
@@ -111,7 +104,6 @@ class TicketSystem(commands.Cog):
                 'guild_id': guild_id,
                 'category_id': None,
                 'create_channel_id': None,
-                'create_message_id': None,
                 'log_channel_id': None,
                 'support_role_id': None,
                 'max_tickets_per_user': 3,
@@ -130,7 +122,7 @@ class TicketSystem(commands.Cog):
             ).fetchone()
             return count[0] if count else 0
 
-    async def create_ticket(self, guild_id, author_id, channel_id, ticket_type='general'):
+    async def create_ticket(self, guild_id, author_id, channel_id, ticket_type='general', topic_id=None):
         async with aiosqlite.connect(self.path) as db:
             created_at = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
             cursor = await db.execute(
@@ -147,11 +139,6 @@ class TicketSystem(commands.Cog):
                 "UPDATE tickets SET status = 'closed', moderator_id = ?, closed_at = ?, close_reason = ? WHERE id = ?",
                 (moderator_id, closed_at, reason, ticket_id)
             )
-            await db.commit()
-
-    async def add_ticket_moderator(self, ticket_id, moderator_id):
-        async with aiosqlite.connect(self.path) as db:
-            await db.execute("UPDATE tickets SET moderator_id = ? WHERE id = ?", (moderator_id, ticket_id))
             await db.commit()
 
     async def save_transcript(self, ticket_id, channel):
@@ -179,6 +166,7 @@ class TicketSystem(commands.Cog):
         
         transcript_content = "\n".join(messages)
         
+        # Сохраняем в базу
         async with aiosqlite.connect(self.path) as db:
             await db.execute(
                 "INSERT INTO transcripts (ticket_id, content, created_at) VALUES (?, ?, ?)",
@@ -190,7 +178,10 @@ class TicketSystem(commands.Cog):
 
     async def get_ticket_info(self, ticket_id):
         async with aiosqlite.connect(self.path) as db:
-            ticket = await db.execute("SELECT * FROM tickets WHERE id = ?", (ticket_id,)).fetchone()
+            ticket = await db.execute(
+                "SELECT * FROM tickets WHERE id = ?", (ticket_id,)
+            ).fetchone()
+            
             if ticket:
                 return {
                     'id': ticket[0],
@@ -208,15 +199,15 @@ class TicketSystem(commands.Cog):
 
     @commands.slash_command(name="ticket_setup", description="Настроить систему тикетов")
     @commands.has_permissions(administrator=True)
-    async def ticket_setup(self, inter: disnake.ApplicationCommandInteraction,
-                          category: disnake.CategoryChannel = commands.Param(description="Категория для тикетов"),
-                          create_channel: disnake.TextChannel = commands.Param(description="Канал для создания тикетов"),
-                          support_role: disnake.Role = commands.Param(description="Роль поддержки", default=None),
-                          log_channel: disnake.TextChannel = commands.Param(description="Канал для логов тикетов", default=None),
-                          max_tickets: int = commands.Param(description="Макс. тикетов на пользователя", default=3, ge=1, le=10),
-                          cooldown: int = commands.Param(description="КД создания тикетов (сек)", default=300, ge=0, le=3600)):
+    async def ticket_setup(self, ctx,
+                          category: discord.CategoryChannel = commands.Option(description="Категория для тикетов"),
+                          create_channel: discord.TextChannel = commands.Option(description="Канал для создания тикетов"),
+                          support_role: discord.Role = commands.Option(description="Роль поддержки", default=None),
+                          log_channel: discord.TextChannel = commands.Option(description="Канал для логов тикетов", default=None),
+                          max_tickets: int = commands.Option(description="Макс. тикетов на пользователя", default=3, min_value=1, max_value=10),
+                          cooldown: int = commands.Option(description="КД создания тикетов (сек)", default=300, min_value=0, max_value=3600)):
         
-        config = await self.get_ticket_config(inter.guild.id)
+        config = await self.get_ticket_config(ctx.guild.id)
         
         async with aiosqlite.connect(self.path) as db:
             await db.execute("""UPDATE ticket_config SET 
@@ -224,33 +215,30 @@ class TicketSystem(commands.Cog):
                              log_channel_id = ?, max_tickets_per_user = ?, ticket_cooldown = ? 
                              WHERE guild_id = ?""",
                            (category.id, create_channel.id, support_role.id if support_role else None,
-                            log_channel.id if log_channel else None, max_tickets, cooldown, inter.guild.id))
+                            log_channel.id if log_channel else None, max_tickets, cooldown, ctx.guild.id))
             await db.commit()
         
         # Создаем сообщение с кнопками
-        embed = disnake.Embed(
+        embed = discord.Embed(
             title="🎫 Система тикетов",
             description="Выберите тип тикета:",
-            color=disnake.Color.green()
+            color=discord.Color.green()
         )
         
-        config = await self.get_ticket_config(inter.guild.id)
-        
-        # Создаем view с кнопками для типов тикетов
+        config = await self.get_ticket_config(ctx.guild.id)
         view = TicketCreateView(self.bot, config)
         
-        # Очищаем старые сообщения и отправляем новое
-        await create_channel.purge(limit=10)
+        await create_channel.purge(limit=10)  # Очищаем старые сообщения
         message = await create_channel.send(embed=embed, view=view)
         
-        # Сохраняем ID сообщения
+        # Фиксируем сообщение для persistent view
         await db.execute(
             "UPDATE ticket_config SET create_message_id = ? WHERE guild_id = ?",
-            (message.id, inter.guild.id)
+            (message.id, ctx.guild.id)
         )
         await db.commit()
         
-        embed = disnake.Embed(
+        embed = discord.Embed(
             title="✅ Настройка тикетов завершена",
             description=f"**Категория:** {category.mention}\n"
                        f"**Канал создания:** {create_channel.mention}\n"
@@ -258,108 +246,108 @@ class TicketSystem(commands.Cog):
                        f"**Канал логов:** {log_channel.mention if log_channel else 'Не настроен'}\n"
                        f"**Макс. тикетов:** {max_tickets}\n"
                        f"**КД:** {cooldown} сек",
-            color=disnake.Color.green()
+            color=discord.Color.green()
         )
-        await inter.response.send_message(embed=embed, ephemeral=True)
+        await ctx.respond(embed=embed, ephemeral=True)
 
     @commands.slash_command(name="ticket_close", description="Закрыть тикет")
     @commands.has_permissions(manage_channels=True)
-    async def ticket_close(self, inter: disnake.ApplicationCommandInteraction,
-                          reason: str = commands.Param(description="Причина закрытия", default="Не указана"),
-                          user: disnake.Member = commands.Param(description="Пользователь для закрытия тикета", default=None)):
+    async def ticket_close(self, ctx,
+                          reason: str = commands.Option(description="Причина закрытия", default="Не указана"),
+                          user: discord.Member = commands.Option(description="Пользователь для закрытия тикета", default=None)):
         
         if user:
             # Закрыть тикет пользователя
             async with aiosqlite.connect(self.path) as db:
                 ticket = await db.execute(
                     "SELECT * FROM tickets WHERE author_id = ? AND guild_id = ? AND status = 'open'",
-                    (user.id, inter.guild.id)
+                    (user.id, ctx.guild.id)
                 ).fetchone()
                 
                 if not ticket:
-                    await inter.response.send_message(f"❌ У {user.mention} нет открытых тикетов.", ephemeral=True)
+                    await ctx.respond(f"❌ У {user.mention} нет открытых тикетов.", ephemeral=True)
                     return
                 
-                channel = inter.guild.get_channel(ticket[4])
+                channel = ctx.guild.get_channel(ticket[4])
                 if channel:
-                    await self.process_ticket_close(ticket[0], channel, inter.author.id, reason)
-                    await inter.response.send_message(f"✅ Тикет пользователя {user.mention} закрыт.", ephemeral=True)
+                    await self.process_ticket_close(ticket[0], channel, ctx.author.id, reason)
+                    await ctx.respond(f"✅ Тикет пользователя {user.mention} закрыт.", ephemeral=True)
                 else:
-                    await inter.response.send_message("❌ Канал тикета не найден.", ephemeral=True)
+                    await ctx.respond("❌ Канал тикета не найден.", ephemeral=True)
         else:
             # Закрыть текущий тикет
             async with aiosqlite.connect(self.path) as db:
                 ticket = await db.execute(
-                    "SELECT * FROM tickets WHERE channel_id = ?", (inter.channel.id,)
+                    "SELECT * FROM tickets WHERE channel_id = ?", (ctx.channel.id,)
                 ).fetchone()
                 
                 if not ticket:
-                    await inter.response.send_message("❌ Этот канал не является тикетом.", ephemeral=True)
+                    await ctx.respond("❌ Этот канал не является тикетом.", ephemeral=True)
                     return
                 
-                await self.process_ticket_close(ticket[0], inter.channel, inter.author.id, reason)
-                await inter.response.send_message("✅ Тикет закрыт.", ephemeral=True)
+                await self.process_ticket_close(ticket[0], ctx.channel, ctx.author.id, reason)
+                await ctx.respond("✅ Тикет закрыт.", ephemeral=True)
 
     @commands.slash_command(name="ticket_add", description="Добавить пользователя в тикет")
     @commands.has_permissions(manage_channels=True)
-    async def ticket_add(self, inter: disnake.ApplicationCommandInteraction,
-                        user: disnake.Member = commands.Param(description="Пользователь для добавления")):
+    async def ticket_add(self, ctx,
+                        user: discord.Member = commands.Option(description="Пользователь для добавления")):
         
         async with aiosqlite.connect(self.path) as db:
             ticket = await db.execute(
-                "SELECT * FROM tickets WHERE channel_id = ?", (inter.channel.id,)
+                "SELECT * FROM tickets WHERE channel_id = ?", (ctx.channel.id,)
             ).fetchone()
             
             if not ticket:
-                await inter.response.send_message("❌ Этот канал не является тикетом.", ephemeral=True)
+                await ctx.respond("❌ Этот канал не является тикетом.", ephemeral=True)
                 return
             
-            await inter.channel.set_permissions(user, read_messages=True, send_messages=True)
+            await ctx.channel.set_permissions(user, read_messages=True, send_messages=True)
             
-            embed = disnake.Embed(
+            embed = discord.Embed(
                 title="👥 Пользователь добавлен",
                 description=f"{user.mention} был добавлен в тикет.",
-                color=disnake.Color.green()
+                color=discord.Color.green()
             )
-            await inter.response.send_message(embed=embed)
+            await ctx.respond(embed=embed)
             
             # Уведомляем пользователя
             try:
-                await user.send(f"📨 Вас добавили в тикет на сервере **{inter.guild.name}**: {inter.channel.mention}")
+                await user.send(f"📨 Вас добавили в тикет на сервере **{ctx.guild.name}**: {ctx.channel.mention}")
             except:
                 pass
 
     @commands.slash_command(name="ticket_remove", description="Удалить пользователя из тикета")
     @commands.has_permissions(manage_channels=True)
-    async def ticket_remove(self, inter: disnake.ApplicationCommandInteraction,
-                           user: disnake.Member = commands.Param(description="Пользователь для удаления")):
+    async def ticket_remove(self, ctx,
+                           user: discord.Member = commands.Option(description="Пользователь для удаления")):
         
         async with aiosqlite.connect(self.path) as db:
             ticket = await db.execute(
-                "SELECT * FROM tickets WHERE channel_id = ?", (inter.channel.id,)
+                "SELECT * FROM tickets WHERE channel_id = ?", (ctx.channel.id,)
             ).fetchone()
             
             if not ticket:
-                await inter.response.send_message("❌ Этот канал не является тикетом.", ephemeral=True)
+                await ctx.respond("❌ Этот канал не является тикетом.", ephemeral=True)
                 return
             
             if user.id == ticket[1]:  # Автора тикета нельзя удалить
-                await inter.response.send_message("❌ Нельзя удалить автора тикета.", ephemeral=True)
+                await ctx.respond("❌ Нельзя удалить автора тикета.", ephemeral=True)
                 return
             
-            await inter.channel.set_permissions(user, overwrite=None)
+            await ctx.channel.set_permissions(user, overwrite=None)
             
-            embed = disnake.Embed(
+            embed = discord.Embed(
                 title="👥 Пользователь удален",
                 description=f"{user.mention} был удален из тикета.",
-                color=disnake.Color.red()
+                color=discord.Color.red()
             )
-            await inter.response.send_message(embed=embed)
+            await ctx.respond(embed=embed)
 
     @commands.slash_command(name="ticket_transcript", description="Получить транскрипт тикета")
     @commands.has_permissions(manage_channels=True)
-    async def ticket_transcript(self, inter: disnake.ApplicationCommandInteraction,
-                               ticket_id: int = commands.Param(description="ID тикета (оставьте пустым для текущего)", default=None)):
+    async def ticket_transcript(self, ctx,
+                               ticket_id: int = commands.Option(description="ID тикета (оставьте пустым для текущего)", default=None)):
         
         if ticket_id:
             # Получить транскрипт по ID
@@ -370,47 +358,47 @@ class TicketSystem(commands.Cog):
                 ).fetchone()
                 
                 if transcript:
-                    file = disnake.File(
+                    file = discord.File(
                         io.StringIO(transcript[0]),
                         filename=f"ticket_{ticket_id}.txt"
                     )
-                    await inter.response.send_message("Вот транскрипт тикета:", file=file, ephemeral=True)
+                    await ctx.respond("Вот транскрипт тикета:", file=file, ephemeral=True)
                 else:
-                    await inter.response.send_message("❌ Транскрипт не найден.", ephemeral=True)
+                    await ctx.respond("❌ Транскрипт не найден.", ephemeral=True)
         else:
             # Получить транскрипт текущего тикета
             async with aiosqlite.connect(self.path) as db:
                 ticket = await db.execute(
-                    "SELECT id FROM tickets WHERE channel_id = ?", (inter.channel.id,)
+                    "SELECT id FROM tickets WHERE channel_id = ?", (ctx.channel.id,)
                 ).fetchone()
                 
                 if not ticket:
-                    await inter.response.send_message("❌ Этот канал не является тикетом.", ephemeral=True)
+                    await ctx.respond("❌ Этот канал не является тикетом.", ephemeral=True)
                     return
                 
-                transcript_content = await self.save_transcript(ticket[0], inter.channel)
+                transcript_content = await self.save_transcript(ticket[0], ctx.channel)
                 
-                file = disnake.File(
+                file = discord.File(
                     io.StringIO(transcript_content),
                     filename=f"ticket_{ticket[0]}.txt"
                 )
-                await inter.response.send_message("Вот транскрипт тикета:", file=file, ephemeral=True)
+                await ctx.respond("Вот транскрипт тикета:", file=file, ephemeral=True)
 
     @commands.slash_command(name="ticket_stats", description="Статистика тикетов")
     @commands.has_permissions(manage_channels=True)
-    async def ticket_stats(self, inter: disnake.ApplicationCommandInteraction):
+    async def ticket_stats(self, ctx):
         async with aiosqlite.connect(self.path) as db:
             # Общая статистика
             total = await db.execute(
-                "SELECT COUNT(*) FROM tickets WHERE guild_id = ?", (inter.guild.id,)
+                "SELECT COUNT(*) FROM tickets WHERE guild_id = ?", (ctx.guild.id,)
             ).fetchone()
             
             open_tickets = await db.execute(
-                "SELECT COUNT(*) FROM tickets WHERE guild_id = ? AND status = 'open'", (inter.guild.id,)
+                "SELECT COUNT(*) FROM tickets WHERE guild_id = ? AND status = 'open'", (ctx.guild.id,)
             ).fetchone()
             
             closed_tickets = await db.execute(
-                "SELECT COUNT(*) FROM tickets WHERE guild_id = ? AND status = 'closed'", (inter.guild.id,)
+                "SELECT COUNT(*) FROM tickets WHERE guild_id = ? AND status = 'closed'", (ctx.guild.id,)
             ).fetchone()
             
             # Топ пользователей по тикетам
@@ -420,11 +408,11 @@ class TicketSystem(commands.Cog):
                 GROUP BY author_id 
                 ORDER BY ticket_count DESC 
                 LIMIT 5
-            """, (inter.guild.id,)).fetchall()
+            """, (ctx.guild.id,)).fetchall()
             
-            embed = disnake.Embed(
+            embed = discord.Embed(
                 title="📊 Статистика тикетов",
-                color=disnake.Color.blue()
+                color=discord.Color.blue()
             )
             
             embed.add_field(name="Всего тикетов", value=str(total[0]), inline=True)
@@ -434,12 +422,12 @@ class TicketSystem(commands.Cog):
             if top_users:
                 users_text = ""
                 for user_id, count in top_users:
-                    user = inter.guild.get_member(user_id)
+                    user = ctx.guild.get_member(user_id)
                     name = user.mention if user else f"ID: {user_id}"
                     users_text += f"{name}: {count} тикетов\n"
                 embed.add_field(name="Топ пользователей", value=users_text, inline=False)
             
-            await inter.response.send_message(embed=embed)
+            await ctx.respond(embed=embed)
 
     async def process_ticket_close(self, ticket_id, channel, moderator_id, reason):
         """Обработка закрытия тикета"""
@@ -457,7 +445,7 @@ class TicketSystem(commands.Cog):
         if config['log_channel_id']:
             log_channel = channel.guild.get_channel(config['log_channel_id'])
             if log_channel:
-                embed = disnake.Embed(
+                embed = discord.Embed(
                     title="🎫 Тикет закрыт",
                     description=f"**Тикет:** #{ticket_id}\n"
                               f"**Автор:** <@{ticket_info['author_id']}>\n"
@@ -466,29 +454,29 @@ class TicketSystem(commands.Cog):
                               f"**Тип:** {ticket_info['ticket_type']}\n"
                               f"**Создан:** {ticket_info['created_at']}\n"
                               f"**Закрыт:** {ticket_info['closed_at']}",
-                    color=disnake.Color.red()
+                    color=discord.Color.red()
                 )
                 await log_channel.send(embed=embed)
                 
                 # Отправляем транскрипт как файл
                 if transcript_content:
-                    file = disnake.File(
+                    file = discord.File(
                         io.StringIO(transcript_content),
                         filename=f"ticket_{ticket_id}.txt"
                     )
                     await log_channel.send(file=file)
         
         # Отсчет перед удалением
-        embed = disnake.Embed(
+        embed = discord.Embed(
             title="🔒 Тикет закрыт",
             description=f"**Причина:** {reason}\n\nКанал будет удален через 10 секунд.",
-            color=disnake.Color.red()
+            color=discord.Color.red()
         )
         await channel.send(embed=embed)
         
         for i in range(9, -1, -1):
             await asyncio.sleep(1)
-            if i <= 5:
+            if i <= 5:  # Обновляем сообщение только последние 5 секунд
                 embed.description = f"**Причина:** {reason}\n\nКанал будет удален через {i} секунд."
                 await channel.send(embed=embed)
         
@@ -501,6 +489,7 @@ class TicketSystem(commands.Cog):
         while not self.bot.is_closed():
             try:
                 async with aiosqlite.connect(self.path) as db:
+                    # Получаем все открытые тикеты
                     tickets = await db.execute("""
                         SELECT t.id, t.channel_id, t.guild_id, t.created_at, c.auto_close_hours 
                         FROM tickets t 
@@ -525,59 +514,68 @@ class TicketSystem(commands.Cog):
             except Exception as e:
                 print(f"Ошибка в проверке автозакрытия: {e}")
             
-            await asyncio.sleep(3600)
+            await asyncio.sleep(3600)  # Проверяем каждый час
 
     @commands.Cog.listener()
-    async def on_button_click(self, inter: disnake.MessageInteraction):
-        custom_id = inter.component.custom_id
+    async def on_interaction(self, interaction):
+        if interaction.type != discord.InteractionType.component:
+            return
         
-        if custom_id.startswith("create_ticket_"):
-            ticket_type = custom_id.replace("create_ticket_", "")
-            await self.handle_ticket_creation(inter, ticket_type)
+        custom_id = interaction.data['custom_id']
+        
+        if custom_id == "create_ticket":
+            await self.handle_ticket_creation(interaction)
         
         elif custom_id == "accept_ticket":
-            await self.handle_ticket_accept(inter)
+            await self.handle_ticket_accept(interaction)
         
         elif custom_id == "close_ticket":
             # Открываем модальное окно для указания причины
-            modal = TicketCloseModal()
-            await inter.response.send_modal(modal)
-
-    @commands.Cog.listener()
-    async def on_modal_submit(self, inter: disnake.ModalInteraction):
-        if inter.custom_id == "ticket_close_modal":
-            reason = inter.text_values["reason"] or "Не указана"
+            modal = TicketCloseModal(title="Закрытие тикета")
+            await interaction.response.send_modal(modal)
             
-            async with aiosqlite.connect(self.path) as db:
-                ticket = await db.execute(
-                    "SELECT * FROM tickets WHERE channel_id = ?", (inter.channel.id,)
-                ).fetchone()
+            try:
+                modal_interaction = await self.bot.wait_for(
+                    "modal_submit",
+                    timeout=60.0,
+                    check=lambda m: m.custom_id == "ticket_close_modal" and m.user.id == interaction.user.id
+                )
                 
-                if not ticket:
-                    await inter.response.send_message("❌ Тикет не найден.", ephemeral=True)
-                    return
+                reason = modal_interaction.data['components'][0]['components'][0]['value']
                 
-                await self.process_ticket_close(ticket[0], inter.channel, inter.author.id, reason)
-                await inter.response.defer()
+                async with aiosqlite.connect(self.path) as db:
+                    ticket = await db.execute(
+                        "SELECT * FROM tickets WHERE channel_id = ?", (interaction.channel.id,)
+                    ).fetchone()
+                    
+                    if not ticket:
+                        await modal_interaction.response.send_message("❌ Тикет не найден.", ephemeral=True)
+                        return
+                    
+                    await self.process_ticket_close(ticket[0], interaction.channel, interaction.user.id, reason)
+                    await modal_interaction.response.defer()
+                    
+            except asyncio.TimeoutError:
+                await interaction.followup.send("❌ Время ожидания истекло.", ephemeral=True)
 
-    async def handle_ticket_creation(self, inter: disnake.MessageInteraction, ticket_type):
+    async def handle_ticket_creation(self, interaction):
         """Обработка создания тикета"""
-        config = await self.get_ticket_config(inter.guild.id)
+        config = await self.get_ticket_config(interaction.guild.id)
         
         # Проверка кд
-        user_cooldown = self.ticket_cooldowns.get(inter.author.id)
+        user_cooldown = self.ticket_cooldowns.get(interaction.user.id)
         if user_cooldown and (datetime.now() - user_cooldown).total_seconds() < config['ticket_cooldown']:
             remaining = config['ticket_cooldown'] - int((datetime.now() - user_cooldown).total_seconds())
-            await inter.response.send_message(
+            await interaction.response.send_message(
                 f"❌ Подождите {remaining} секунд перед созданием нового тикета.",
                 ephemeral=True
             )
             return
         
         # Проверка лимита тикетов
-        user_tickets = await self.get_user_tickets_count(inter.guild.id, inter.author.id)
+        user_tickets = await self.get_user_tickets_count(interaction.guild.id, interaction.user.id)
         if user_tickets >= config['max_tickets_per_user']:
-            await inter.response.send_message(
+            await interaction.response.send_message(
                 f"❌ У вас уже {user_tickets} открытых тикетов. Максимум: {config['max_tickets_per_user']}.",
                 ephemeral=True
             )
@@ -585,101 +583,98 @@ class TicketSystem(commands.Cog):
         
         # Создаем тикет
         if not config['category_id']:
-            await inter.response.send_message("❌ Система тикетов не настроена.", ephemeral=True)
+            await interaction.response.send_message("❌ Система тикетов не настроена.", ephemeral=True)
             return
         
-        category = inter.guild.get_channel(config['category_id'])
+        category = interaction.guild.get_channel(config['category_id'])
         if not category:
-            await inter.response.send_message("❌ Категория тикетов не найдена.", ephemeral=True)
+            await interaction.response.send_message("❌ Категория тикетов не найдена.", ephemeral=True)
             return
         
         # Создаем канал тикета
-        ticket_channel = await inter.guild.create_text_channel(
-            name=f"ticket-{inter.author.name}-{datetime.now().strftime('%d%m')}",
-            category=category,
-            topic=f"Тикет пользователя {inter.author.name} | Тип: {ticket_type}"
+        ticket_channel = await category.create_text_channel(
+            f"ticket-{interaction.user.name}-{datetime.now().strftime('%d%m')}",
+            topic=f"Тикет пользователя {interaction.user.name}"
         )
         
         # Настраиваем права
-        await ticket_channel.set_permissions(inter.author, read_messages=True, send_messages=True)
-        await ticket_channel.set_permissions(inter.guild.default_role, read_messages=False)
+        await ticket_channel.set_permissions(interaction.user, read_messages=True, send_messages=True)
+        await ticket_channel.set_permissions(interaction.guild.default_role, read_messages=False)
         
         if config['support_role_id']:
-            support_role = inter.guild.get_role(config['support_role_id'])
+            support_role = interaction.guild.get_role(config['support_role_id'])
             if support_role:
                 await ticket_channel.set_permissions(support_role, read_messages=True, send_messages=True)
         
         # Создаем запись в БД
-        ticket_id = await self.create_ticket(inter.guild.id, inter.author.id, ticket_channel.id, ticket_type)
+        ticket_id = await self.create_ticket(interaction.guild.id, interaction.user.id, ticket_channel.id)
         
         # Устанавливаем кд
-        self.ticket_cooldowns[inter.author.id] = datetime.now()
+        self.ticket_cooldowns[interaction.user.id] = datetime.now()
         
         # Отправляем приветственное сообщение
         view = TicketActionsView()
         
-        embed = disnake.Embed(
+        embed = discord.Embed(
             title=f"🎫 Тикет #{ticket_id}",
             description=config['welcome_message'],
-            color=disnake.Color.green()
+            color=discord.Color.green()
         )
-        embed.add_field(name="👤 Автор", value=inter.author.mention, inline=True)
+        embed.add_field(name="👤 Автор", value=interaction.user.mention, inline=True)
         embed.add_field(name="📅 Создан", value=datetime.now().strftime("%d.%m.%Y %H:%M"), inline=True)
-        embed.add_field(name="🔖 Тип", value=ticket_type.capitalize(), inline=True)
         embed.set_footer(text="Тикет будет автоматически закрыт через 24 часа неактивности")
         
         await ticket_channel.send(embed=embed, view=view)
-        await ticket_channel.send(f"{inter.author.mention} {f'<@&{config['support_role_id']}>' if config['support_role_id'] else ''}")
+        await ticket_channel.send(f"{interaction.user.mention} {f'<@&{config['support_role_id']}>' if config['support_role_id'] else ''}")
         
-        await inter.response.send_message(
+        await interaction.response.send_message(
             f"✅ Тикет создан: {ticket_channel.mention}",
             ephemeral=True
         )
         
         # Логируем создание
         if config['log_channel_id']:
-            log_channel = inter.guild.get_channel(config['log_channel_id'])
+            log_channel = interaction.guild.get_channel(config['log_channel_id'])
             if log_channel:
-                embed = disnake.Embed(
+                embed = discord.Embed(
                     title="🎫 Новый тикет",
                     description=f"**Тикет:** #{ticket_id}\n"
-                              f"**Автор:** {inter.author.mention} ({inter.author.id})\n"
-                              f"**Тип:** {ticket_type}\n"
+                              f"**Автор:** {interaction.user.mention} ({interaction.user.id})\n"
                               f"**Канал:** {ticket_channel.mention}",
-                    color=disnake.Color.green()
+                    color=discord.Color.green()
                 )
                 await log_channel.send(embed=embed)
 
-    async def handle_ticket_accept(self, inter: disnake.MessageInteraction):
+    async def handle_ticket_accept(self, interaction):
         """Обработка принятия тикета"""
         async with aiosqlite.connect(self.path) as db:
             ticket = await db.execute(
-                "SELECT * FROM tickets WHERE channel_id = ?", (inter.channel.id,)
+                "SELECT * FROM tickets WHERE channel_id = ?", (interaction.channel.id,)
             ).fetchone()
             
             if not ticket:
-                await inter.response.send_message("❌ Тикет не найден.", ephemeral=True)
+                await interaction.response.send_message("❌ Тикет не найден.", ephemeral=True)
                 return
             
             if ticket[5]:  # moderator_id
-                await inter.response.send_message(
+                await interaction.response.send_message(
                     f"❌ Тикет уже принят пользователем <@{ticket[5]}>.",
                     ephemeral=True
                 )
                 return
             
-            await self.add_ticket_moderator(ticket[0], inter.author.id)
+            await self.add_ticket_moderator(ticket[0], interaction.user.id)
             
-            embed = disnake.Embed(
+            embed = discord.Embed(
                 title="✅ Тикет принят",
-                description=f"Модератор {inter.author.mention} принял тикет.",
-                color=disnake.Color.green()
+                description=f"Модератор {interaction.user.mention} принял тикет.",
+                color=discord.Color.green()
             )
-            await inter.channel.send(embed=embed)
+            await interaction.channel.send(embed=embed)
             
-            await inter.response.send_message("✅ Вы приняли тикет.", ephemeral=True)
+            await interaction.response.send_message("✅ Вы приняли тикет.", ephemeral=True)
 
-class TicketCreateView(View):
+class TicketCreateView(discord.ui.View):
     """View для создания тикета с выбором типа"""
     
     def __init__(self, bot, config):
@@ -690,13 +685,14 @@ class TicketCreateView(View):
         # Добавляем кнопки для каждого типа тикета
         for ticket_type in self.config['ticket_types']:
             emoji = self.get_emoji_for_type(ticket_type)
-            button = Button(
-                label=ticket_type.capitalize(),
-                emoji=emoji,
-                style=disnake.ButtonStyle.primary,
-                custom_id=f"create_ticket_{ticket_type}"
+            self.add_item(
+                discord.ui.Button(
+                    label=ticket_type.capitalize(),
+                    emoji=emoji,
+                    style=discord.ButtonStyle.primary,
+                    custom_id=f"create_ticket_{ticket_type}"
+                )
             )
-            self.add_item(button)
     
     def get_emoji_for_type(self, ticket_type):
         emojis = {
@@ -710,51 +706,54 @@ class TicketCreateView(View):
         }
         return emojis.get(ticket_type, '🎫')
 
-class TicketActionsView(View):
+class TicketActionsView(discord.ui.View):
     """View для управления тикетом"""
     
     def __init__(self):
         super().__init__(timeout=None)
         
-        accept_button = Button(
+        self.add_item(discord.ui.Button(
             label="✅ Принять",
-            style=disnake.ButtonStyle.green,
+            style=discord.ButtonStyle.green,
             custom_id="accept_ticket",
             emoji="✅"
-        )
-        self.add_item(accept_button)
+        ))
         
-        close_button = Button(
+        self.add_item(discord.ui.Button(
             label="❌ Закрыть",
-            style=disnake.ButtonStyle.red,
+            style=discord.ButtonStyle.red,
             custom_id="close_ticket",
             emoji="❌"
-        )
-        self.add_item(close_button)
+        ))
         
-        transcript_button = Button(
+        self.add_item(discord.ui.Button(
             label="📋 Транскрипт",
-            style=disnake.ButtonStyle.blurple,
+            style=discord.ButtonStyle.blurple,
             custom_id="transcript_ticket",
             emoji="📋"
-        )
-        self.add_item(transcript_button)
+        ))
 
-class TicketCloseModal(Modal):
+class TicketCloseModal(discord.ui.Modal):
     """Модальное окно для закрытия тикета"""
     
-    def __init__(self):
-        components = [
-            TextInput(
-                label="Причина закрытия",
-                placeholder="Укажите причину закрытия тикета...",
-                custom_id="reason",
-                style=disnake.TextInputStyle.long,
-                max_length=500,
-                required=False
-            )
-        ]
-        super().__init__(title="Закрытие тикета", custom_id="ticket_close_modal", components=components)
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        
+        self.add_item(discord.ui.InputText(
+            label="Причина закрытия",
+            placeholder="Укажите причину закрытия тикета...",
+            style=discord.InputTextStyle.long,
+            max_length=500,
+            required=False
+        ))
+    
+    async def callback(self, interaction: discord.Interaction):
+        # Закрываем тикет через основной класс
+        cog = interaction.client.get_cog("TicketSystem")
+        if cog:
+            await interaction.response.defer()
+        else:
+            await interaction.response.send_message("❌ Ошибка системы тикетов.", ephemeral=True)
 
-def setup(bot):
-    bot.add_cog(TicketSystem(bot))
+async def setup(bot):
+    await bot.add_cog(TicketSystem(bot))
