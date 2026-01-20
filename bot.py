@@ -13,6 +13,6 @@ async def on_ready():
     await bot.change_presence(activity=discord.Activity(type=discord.ActivityType.playing, name="Minecraft | Сервер: AquaLand"), status=discord.Status.dnd)
     print(f"Logged in as {bot.user.name}")
     
-    bot.load_extensions("cogs")
+    await bot.load_extensions("cogs/")
 
 bot.run(TOKEN)
