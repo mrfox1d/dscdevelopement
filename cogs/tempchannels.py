@@ -1,6 +1,7 @@
-import disnake
-from disnake.ext import commands
-from disnake.ui import Modal, TextInput
+# tempchannels.py
+import discord
+from discord.ext import commands
+from discord.ui import Modal, TextInput, Select, View, Button
 import aiosqlite
 import asyncio
 
@@ -37,7 +38,6 @@ class TempVoices(commands.Cog):
 
     async def edit_settings(self, creator_id, **kwargs):
         async with aiosqlite.connect(self.path) as db:
-            # Обновляем только переданные поля
             if kwargs:
                 set_clause = ", ".join([f"{key} = ?" for key in kwargs.keys()])
                 values = list(kwargs.values())
@@ -81,7 +81,6 @@ class TempVoices(commands.Cog):
             async with aiosqlite.connect(self.path) as db:
                 setup = await db.execute("SELECT mother_channel_id FROM tempchannels WHERE guild_id = ?", (member.guild.id,)).fetchone()
                 if setup and after.channel.id == setup[0]:
-                    # Создаем временный канал
                     category = member.guild.get_channel(setup[1]) if setup[1] else None
                     tempvoice = await member.guild.create_voice_channel(
                         f"🔊・{member.display_name}",
@@ -90,10 +89,8 @@ class TempVoices(commands.Cog):
                     await self.create_temp_voice(member.id, tempvoice.id, owner_id=member.id)
                     await member.move_to(tempvoice)
                     
-                    # Даем права создателю
                     await tempvoice.set_permissions(member, connect=True, speak=True, view_channel=True)
         
-        # Проверяем пустые каналы
         if before.channel and before.channel != after.channel:
             if len(before.channel.members) == 0:
                 async with aiosqlite.connect(self.path) as db:
@@ -114,7 +111,7 @@ class TempVoices(commands.Cog):
             
             message = await ctx.send("""**🛠️ Процесс создания начался.**\n░░░░░░░░░░░░ | 0%""")
             
-            category = await ctx.guild.create_category("🎵 Временные голосовые каналы")
+            category = await ctx.guild.create_category_channel("🎵 Временные голосовые каналы")
             await message.edit(content="""**🛠️ Создание в процессе.**\n███░░░░░░░░░ | 25%""")
             
             channel = await ctx.guild.create_text_channel("🎵・настройки", category=category)
@@ -128,7 +125,7 @@ class TempVoices(commands.Cog):
                            (ctx.guild.id, category.id, channel.id, mother_channel.id))
             await db.commit()
             
-            emb = disnake.Embed(
+            emb = discord.Embed(
                 title="🔊 Настройка временных голосовых каналов.", 
                 description="""🔇 - **заглушить пользователя**
 ❌ - **забанить пользователя**
@@ -138,18 +135,18 @@ class TempVoices(commands.Cog):
 ⚙️ - **изменить битрейт канала**"""
             )
             
-            view = disnake.ui.View(timeout=None)
+            view = View(timeout=None)
             buttons = [
-                ("🔇", "mute", disnake.ButtonStyle.secondary),
-                ("❌", "ban", disnake.ButtonStyle.secondary),
-                ("👢", "kick", disnake.ButtonStyle.secondary),
-                ("🔐", "lock", disnake.ButtonStyle.secondary),
-                ("👑", "give_ownership", disnake.ButtonStyle.secondary),
-                ("⚙️", "bitrate", disnake.ButtonStyle.secondary),
+                ("🔇", "mute", discord.ButtonStyle.secondary),
+                ("❌", "ban", discord.ButtonStyle.secondary),
+                ("👢", "kick", discord.ButtonStyle.secondary),
+                ("🔐", "lock", discord.ButtonStyle.secondary),
+                ("👑", "give_ownership", discord.ButtonStyle.secondary),
+                ("⚙️", "bitrate", discord.ButtonStyle.secondary),
             ]
             
             for label, custom_id, style in buttons:
-                btn = disnake.ui.Button(label=label, style=style, custom_id=custom_id)
+                btn = Button(label=label, style=style, custom_id=custom_id)
                 view.add_item(btn)
             
             await channel.send("@everyone", embed=emb, view=view)
@@ -157,49 +154,51 @@ class TempVoices(commands.Cog):
 🔊 Каналы: {channel.mention}, {mother_channel.mention} | Категория: {category.name}""")
 
     @commands.Cog.listener()
-    async def on_button_click(self, inter: disnake.MessageInteraction):
-        custom_id = inter.component.custom_id
+    async def on_interaction(self, interaction):
+        if interaction.type != discord.InteractionType.component:
+            return
+        
+        custom_id = interaction.data['custom_id']
         
         if custom_id == "lock":
-            tempvoice = await self.get_temp_voice(inter.author.id)
+            tempvoice = await self.get_temp_voice(interaction.user.id)
             if not tempvoice:
-                await inter.response.send_message("❌ Вы не создали временный канал.", ephemeral=True)
+                await interaction.response.send_message("❌ Вы не создали временный канал.", ephemeral=True)
                 return
             
-            channel = inter.guild.get_channel(tempvoice[1])
+            channel = interaction.guild.get_channel(tempvoice[1])
             if not channel:
-                await inter.response.send_message("❌ Канал не найден.", ephemeral=True)
+                await interaction.response.send_message("❌ Канал не найден.", ephemeral=True)
                 return
             
-            if tempvoice[4] == "true":  # is_private
-                await channel.set_permissions(inter.guild.default_role, connect=False)
-                await self.edit_settings(inter.author.id, is_private="false")
-                await inter.response.send_message("✅ Вы закрыли канал.", ephemeral=True)
+            if tempvoice[4] == "true":
+                await channel.set_permissions(interaction.guild.default_role, connect=False)
+                await self.edit_settings(interaction.user.id, is_private="false")
+                await interaction.response.send_message("✅ Вы закрыли канал.", ephemeral=True)
             else:
-                await channel.set_permissions(inter.guild.default_role, connect=True)
-                await self.edit_settings(inter.author.id, is_private="true")
-                await inter.response.send_message("✅ Вы открыли канал.", ephemeral=True)
+                await channel.set_permissions(interaction.guild.default_role, connect=True)
+                await self.edit_settings(interaction.user.id, is_private="true")
+                await interaction.response.send_message("✅ Вы открыли канал.", ephemeral=True)
         
         elif custom_id == "give_ownership":
-            tempvoice = await self.get_temp_voice(inter.author.id)
+            tempvoice = await self.get_temp_voice(interaction.user.id)
             
             if not tempvoice:
-                await inter.response.send_message("❌ Вы не создали временный канал.", ephemeral=True)
+                await interaction.response.send_message("❌ Вы не создали временный канал.", ephemeral=True)
                 return
             
-            channel = inter.guild.get_channel(tempvoice[1])
+            channel = interaction.guild.get_channel(tempvoice[1])
             if not channel or not hasattr(channel, 'members'):
-                await inter.response.send_message("❌ Голосовой канал не найден.", ephemeral=True)
+                await interaction.response.send_message("❌ Голосовой канал не найден.", ephemeral=True)
                 return
             
             members = channel.members
             if not members:
-                await inter.response.send_message("❌ Канал пуст.", ephemeral=True)
+                await interaction.response.send_message("❌ Канал пуст.", ephemeral=True)
                 return
             
-            # Создаем выпадающий список
             options = []
-            for i, member in enumerate(members[:25]):  # Discord allows max 25 options
+            for i, member in enumerate(members[:25]):
                 emoji = "👤"
                 if member.voice:
                     if member.voice.mute:
@@ -209,28 +208,26 @@ class TempVoices(commands.Cog):
                     elif member.voice.self_deaf:
                         emoji = "🎧"
                 
-                options.append(disnake.SelectOption(
+                options.append(discord.SelectOption(
                     label=member.display_name[:100],
                     value=str(member.id),
                     emoji=emoji
                 ))
             
-            # Добавляем опцию для ручного ввода
-            options.append(disnake.SelectOption(
+            options.append(discord.SelectOption(
                 label="Вписать ID вручную",
                 value="manual",
                 emoji="⌨️"
             ))
             
-            select = disnake.ui.Select(
+            select = Select(
                 placeholder=f"Выберите пользователя ({len(members)} чел.)",
                 options=options,
                 custom_id="select_owner"
             )
             
-            async def select_callback(select_inter: disnake.MessageInteraction):
+            async def select_callback(select_interaction):
                 if select.values[0] == "manual":
-                    # Модальное окно для ручного ввода ID
                     modal = Modal(
                         title="Введите ID пользователя",
                         custom_id="manual_id_modal"
@@ -242,50 +239,50 @@ class TempVoices(commands.Cog):
                             placeholder="123456789012345678"
                         )
                     )
-                    await select_inter.response.send_modal(modal)
+                    await select_interaction.response.send_modal(modal)
                     
                     try:
-                        modal_inter: disnake.ModalInteraction = await self.bot.wait_for(
+                        modal_interaction = await self.bot.wait_for(
                             "modal_submit",
                             timeout=60.0,
-                            check=lambda m: m.custom_id == "manual_id_modal" and m.author.id == inter.author.id
+                            check=lambda m: m.data['custom_id'] == "manual_id_modal" and m.user.id == interaction.user.id
                         )
                         
-                        user_id = int(modal_inter.text_values["user_id"])
-                        new_owner = inter.guild.get_member(user_id)
+                        user_id = int(modal_interaction.data['components'][0]['components'][0]['value'])
+                        new_owner = interaction.guild.get_member(user_id)
                         
                         if not new_owner:
-                            await modal_inter.response.send_message("❌ Пользователь не найден.", ephemeral=True)
+                            await modal_interaction.response.send_message("❌ Пользователь не найден.", ephemeral=True)
                             return
                         
                         if new_owner not in members:
-                            await modal_inter.response.send_message("❌ Этот пользователь не в вашем канале.", ephemeral=True)
+                            await modal_interaction.response.send_message("❌ Этот пользователь не в вашем канале.", ephemeral=True)
                             return
                         
-                        await self.edit_settings(inter.author.id, owner_id=new_owner.id)
-                        await modal_inter.response.send_message(f"✅ Вы передали владение канала {new_owner.mention}.", ephemeral=True)
+                        await self.edit_settings(interaction.user.id, owner_id=new_owner.id)
+                        await modal_interaction.response.send_message(f"✅ Вы передали владение канала {new_owner.mention}.", ephemeral=True)
                         
                     except ValueError:
-                        await select_inter.followup.send("❌ Неверный ID. Введите числовой ID.", ephemeral=True)
+                        await select_interaction.followup.send("❌ Неверный ID. Введите числовой ID.", ephemeral=True)
                     except asyncio.TimeoutError:
-                        await select_inter.followup.send("❌ Время ожидания истекло.", ephemeral=True)
+                        await select_interaction.followup.send("❌ Время ожидания истекло.", ephemeral=True)
                 
                 else:
                     new_owner_id = int(select.values[0])
-                    new_owner = inter.guild.get_member(new_owner_id)
+                    new_owner = interaction.guild.get_member(new_owner_id)
                     
                     if new_owner and new_owner in members:
-                        await self.edit_settings(inter.author.id, owner_id=new_owner_id)
-                        await select_inter.response.send_message(f"✅ Вы передали владение канала {new_owner.mention}.", ephemeral=True)
+                        await self.edit_settings(interaction.user.id, owner_id=new_owner_id)
+                        await select_interaction.response.send_message(f"✅ Вы передали владение канала {new_owner.mention}.", ephemeral=True)
                     else:
-                        await select_inter.response.send_message("❌ Пользователь не найден или не в канале.", ephemeral=True)
+                        await select_interaction.response.send_message("❌ Пользователь не найден или не в канале.", ephemeral=True)
             
             select.callback = select_callback
             
-            view = disnake.ui.View()
+            view = View()
             view.add_item(select)
             
-            await inter.response.send_message("Выберите нового владельца:", view=view, ephemeral=True)
+            await interaction.response.send_message("Выберите нового владельца:", view=view, ephemeral=True)
 
-def setup(bot):
-    bot.add_cog(TempVoices(bot))
+async def setup(bot):
+    await bot.add_cog(TempVoices(bot))
